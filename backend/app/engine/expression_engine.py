@@ -1,0 +1,197 @@
+import re
+from typing import Any, List
+from app.engine.exceptions import JavaException
+
+
+class ExpressionEngine:
+    def __init__(self, executor):
+        self.executor = executor
+        self.keywords = {
+            'if', 'for', 'while', 'switch', 'return', 'new',
+            'public', 'static', 'class', 'String', 'boolean',
+            'int', 'char', 'float', 'double', 'long', 'byte', 'short',
+            'ArrayList', 'HashMap', 'null', 'true', 'false'
+        }
+
+    def evaluate(self, expr: str, line_number: int, steps: List) -> Any:
+        expr = expr.strip()
+        if not expr:
+            return None
+
+        # ---------------- LITERALS ----------------
+        if expr.startswith('"') and expr.endswith('"'):
+            return expr[1:-1]
+
+        if expr == 'true': return True
+        if expr == 'false': return False
+        if expr == 'null': return None
+
+        try:
+            if '.' in expr:
+                return float(expr)
+            return int(expr)
+        except:
+            pass
+
+        # ---------------- OBJECT CREATION ----------------
+        if expr.startswith('new '):
+            builtin = self.executor.runtime_engine.create_builtin_object(expr, line_number, steps)
+            if builtin is not None:
+                return builtin
+
+            match = re.match(r'new\s+([\w\.]+)\s*\(([^)]*)\)', expr)
+            if match:
+                class_name, args_str = match.groups()
+
+                eval_args = [
+                    self.evaluate(a, line_number, steps)
+                    for a in self.executor._parse_method_args(args_str)
+                ]
+
+                obj_id = self.executor.memory.create_object(class_name)
+
+                self.executor.oop_engine.execute_constructor(
+                    class_name, obj_id, eval_args, line_number, steps
+                )
+
+                return obj_id
+
+        # ---------------- METHOD CALLS ----------------
+        method_pattern = re.compile(r'\b([\w\.]+)\s*\(')
+
+        while True:
+            matches = list(method_pattern.finditer(expr))
+            if not matches:
+                break
+
+            match = None
+            for m in reversed(matches):
+                if m.group(1) not in self.keywords:
+                    match = m
+                    break
+
+            if not match:
+                break
+
+            start = match.end() - 1
+            end = self.executor._find_matching_paren(expr, start)
+            if end == -1:
+                break
+
+            full_name = match.group(1)
+            args_raw = self.executor._parse_method_args(expr[start + 1:end])
+
+            eval_args = [
+                self.evaluate(a, line_number, steps)
+                for a in args_raw
+            ]
+
+            result = self.executor.method_engine.call(
+                full_name, eval_args, line_number, steps
+            )
+
+            replacement = self._safe_repr(result)
+            expr = expr[:match.start()] + replacement + expr[end + 1:]
+
+        # ---------------- ARRAY ACCESS ----------------
+        array_pattern = re.compile(r'(\w+)\[([^\[\]]+)\]')
+
+        while True:
+            match = array_pattern.search(expr)
+            if not match:
+                break
+
+            name, idx_expr = match.groups()
+            idx = self.evaluate(idx_expr, line_number, steps)
+            arr = self.executor._get_var(name)
+
+            if arr is None or 'values' not in arr:
+                raise JavaException("NullPointerException", name, line_number)
+
+            if not (0 <= idx < len(arr['values'])):
+                raise JavaException("ArrayIndexOutOfBoundsException", str(idx), line_number)
+
+            expr = expr.replace(match.group(0), self._safe_repr(arr['values'][idx]), 1)
+
+        # ---------------- MEMBER + VARIABLE RESOLUTION ----------------
+        member_pattern = re.compile(r'\b([\w]+(?:\.[\w]+)*)\b')
+
+        while True:
+            found = False
+
+            for m in member_pattern.finditer(expr):
+                name = m.group(1)
+
+                # skip keywords
+                if name in self.keywords:
+                    continue
+
+                # ---------------- this.field ----------------
+                if name.startswith("this."):
+                    frame = self.executor.call_stack.peek()
+                    if frame and frame.this_obj_id:
+                        field = name.split(".", 1)[1]
+                        val = self.executor.memory.get_instance_field(frame.this_obj_id, field)
+                        expr = expr.replace(name, self._safe_repr(val), 1)
+                        found = True
+                        break
+
+                # ---------------- obj.field ----------------
+                if "." in name:
+                    base, field = name.split(".", 1)
+                    base_val = self.executor._get_var(base)
+
+                    if isinstance(base_val, int):
+                        val = self.executor.memory.get_instance_field(base_val, field)
+                        expr = expr.replace(name, self._safe_repr(val), 1)
+                        found = True
+                        break
+
+                # ---------------- local variable ----------------
+                val = self.executor._get_var(name)
+                if val is not None:
+                    expr = expr.replace(name, self._safe_repr(val), 1)
+                    found = True
+                    break
+
+                # 🔥 FIX: implicit this.field (YOUR BUG FIX)
+                frame = self.executor.call_stack.peek()
+                if frame and frame.this_obj_id:
+                    try:
+                        val = self.executor.memory.get_instance_field(frame.this_obj_id, name)
+                        expr = expr.replace(name, self._safe_repr(val), 1)
+                        found = True
+                        break
+                    except:
+                        pass
+
+            if not found:
+                break
+
+        # ---------------- FINAL EVAL ----------------
+        python_expr = (
+            expr.replace('&&', ' and ')
+                .replace('||', ' or ')
+                .replace('!', ' not ')
+                .replace('true', 'True')
+                .replace('false', 'False')
+        )
+
+        # array literal fix
+        python_expr = re.sub(r'new\s+\w+\[\]\s*\{', '[', python_expr)
+        python_expr = python_expr.replace('{', '[').replace('}', ']')
+
+        try:
+            return eval(python_expr, {"__builtins__": None}, {})
+        except Exception as e:
+            raise JavaException("RuntimeException", str(e), line_number)
+
+    # ---------------- SAFE REPRESENTATION ----------------
+    def _safe_repr(self, val: Any) -> str:
+        if val is None:
+            return 'None'
+        if isinstance(val, str):
+            return f'"{val}"'
+        if isinstance(val, bool):
+            return 'True' if val else 'False'
+        return str(val)

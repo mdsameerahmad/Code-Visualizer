@@ -1,0 +1,17 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-gray-950 text-gray-100;
+  }
+}
+
+.monaco-editor {
+  padding-top: 10px;
+}
+
+.error-line {
+  background-color: rgba(255, 0, 0, 0.3);
+}
