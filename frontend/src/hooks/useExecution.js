@@ -19,10 +19,10 @@ export const useExecution = (setCode) => {
       }
 
       if (data.error) {
-        setError(data.error);
         if (data.steps && data.steps.length > 0) {
           setSteps(data.steps);
         }
+        setError(data.error);
         return;
       }
       

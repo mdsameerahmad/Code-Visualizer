@@ -71,6 +71,22 @@ class ExpressionEngine:
 
                 return obj_id
 
+        # ---------------- STATIC METHOD CALLS ----------------
+        # Handle full static calls like Integer.valueOf(10) as first-class values.
+        static_m = re.match(r'^([A-Z]\w*)\.(\w+)\s*\(', expr)
+        if static_m:
+            class_name, method_name = static_m.group(1), static_m.group(2)
+            start = static_m.end() - 1
+            end = self.executor._find_matching_paren(expr, start)
+            if end != -1 and end == len(expr) - 1:
+                args_raw = self.executor._parse_method_args(expr[start + 1:end])
+                eval_args = [self.evaluate(a, line_number, steps) for a in args_raw]
+                res = self.executor.runtime_engine.handle_static_method(
+                    class_name, method_name, eval_args, line_number, steps=steps
+                )
+                if res != "NO_BUILTIN":
+                    return res
+
         # ---------------- LITERAL BASE METHOD CALLS ----------------
         # Handle calls like:
         #   "ABC".equalsIgnoreCase("abc")
@@ -94,7 +110,12 @@ class ExpressionEngine:
             base_val = self.evaluate(base_expr, line_number, steps)
 
             result = self.executor.runtime_engine.handle_builtin_method(
-                base_val, method_name, eval_args, line_number
+                base_val,
+                method_name,
+                eval_args,
+                line_number,
+                steps=steps,
+                target_name=base_expr,
             )
             if result == "NO_BUILTIN":
                 raise JavaException(
@@ -283,4 +304,6 @@ class ExpressionEngine:
             return json.dumps(val)
         if isinstance(val, bool):
             return 'True' if val else 'False'
+        if isinstance(val, dict) and val.get("type") == "Integer":
+            return str(val.get("value", 0))
         return str(val)

@@ -54,7 +54,9 @@ const MemoryView = ({ variables, arrays = null }) => {
 
   const entries = Object.entries(variables).filter(([name, value]) => {
     if (!arrays || !arrays[name]) return true;
-    return !isArrayLike(value);
+    if (isArrayLike(value)) return false;
+    if (value && typeof value === 'object' && value.type === 'arraylist') return false;
+    return true;
   });
 
   if (entries.length === 0) return null;

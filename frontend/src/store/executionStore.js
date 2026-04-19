@@ -11,7 +11,7 @@ const useExecutionStore = create((set, get) => ({
 
   setSteps: (steps) => {
     const initialOutput = steps?.[0]?.output ? [steps[0].output] : [];
-    set({ steps, currentStepIndex: 0, error: null, outputHistory: initialOutput });
+    set({ steps, currentStepIndex: 0, outputHistory: initialOutput });
   },
   setCurrentStepIndex: (index) => set({ currentStepIndex: index }),
   setIsPlaying: (isPlaying) => set({ isPlaying }),

@@ -88,6 +88,8 @@ class StringEngine:
             return "true" if value else "false"
         if isinstance(value, dict) and value.get("type") == "array":
             return str(value.get("values", []))
+        if isinstance(value, dict) and value.get("type") in ("arraylist", "ArrayList"):
+            return str(value.get("elements", value.get("values", [])))
         return str(value)
 
     def parse_operation_hints(self, line_content: str) -> dict:

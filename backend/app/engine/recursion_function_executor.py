@@ -31,6 +31,13 @@ class RecursionFunctionExecutor:
             parts = full_method_name.split(".")
             base_name, method_name = parts[0], parts[1]
 
+            # Static builtins like Integer.valueOf(...)
+            static_res = self.executor.runtime_engine.handle_static_method(
+                base_name, method_name, args, line_number, steps=steps
+            )
+            if static_res != "NO_BUILTIN":
+                return static_res
+
             if base_name == "this":
                 frame = self.executor.call_stack.peek()
                 if frame and frame.this_obj_id:
@@ -41,7 +48,12 @@ class RecursionFunctionExecutor:
                 base_val = self.executor._get_var(base_name)
 
                 builtin = self.executor.runtime_engine.handle_builtin_method(
-                    base_val, method_name, args, line_number
+                    base_val,
+                    method_name,
+                    args,
+                    line_number,
+                    steps=steps,
+                    target_name=base_name,
                 )
                 if builtin != "NO_BUILTIN":
                     return builtin

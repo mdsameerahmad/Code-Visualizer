@@ -4,6 +4,7 @@ import CodeEditor from '../components/Editor/CodeEditor';
 import RunButton from '../components/Editor/RunButton';
 import StepTimeline from '../components/Timeline/StepTimeline';
 import ArrayView from '../components/Visualization/ArrayView';
+import ArrayListView from '../components/Visualization/ArrayListView';
 import ErrorBox from '../components/Visualization/ErrorBox';
 import MemoryView from '../components/Visualization/MemoryView';
 import StringView from '../components/Visualization/StringView';
@@ -29,6 +30,21 @@ const Home = () => {
   usePlayback();
 
   const currentStep = steps[currentStepIndex];
+  const currentArrayLists = currentStep
+    ? Object.fromEntries(
+        Object.entries(currentStep.variables || {}).filter(
+          ([, value]) => value && typeof value === 'object' && value.type === 'arraylist'
+        )
+      )
+    : {};
+  const prevArrayLists =
+    currentStepIndex > 0
+      ? Object.fromEntries(
+          Object.entries(steps[currentStepIndex - 1]?.variables || {}).filter(
+            ([, value]) => value && typeof value === 'object' && value.type === 'arraylist'
+          )
+        )
+      : {};
 
   return (
     <div className="flex flex-col h-screen overflow-hidden">
@@ -68,6 +84,12 @@ const Home = () => {
                   <MemoryView variables={currentStep.variables} arrays={currentStep.arrays} />
                 )}
                 {currentStep && <StringView step={currentStep} />}
+                {currentStep && (
+                  <ArrayListView
+                    lists={currentArrayLists}
+                    prevLists={prevArrayLists}
+                  />
+                )}
                 {currentStep && (
                   <ArrayView
                     arrays={currentStep.arrays}
