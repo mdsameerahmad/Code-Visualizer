@@ -30,7 +30,7 @@ for(int i = 2; i >= 0; i--) {
 """
     steps = []
     try:
-        steps, _ = executor.execute(code)
+        steps, _, _ = executor.execute(code)
         final_arrays = steps[-1].arrays
         expected_array = [1, 1, 1]
         actual_array = final_arrays["arr"].values
@@ -54,7 +54,7 @@ for(int i = 4; i >= 0; i--) {
 """
     steps = []
     try:
-        steps, _ = executor.execute(code)
+        steps, _, _ = executor.execute(code)
         final_arrays = steps[-1].arrays
         expected_array = [0, 2, 2, 6, 4]
         actual_array = final_arrays["arr"].values

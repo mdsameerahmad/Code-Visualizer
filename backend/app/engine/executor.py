@@ -55,7 +55,8 @@ class Executor:
             'catch_header': re.compile(r'\}\s*catch\s*\(([^)]+)\)\s*\{|catch\s*\(([^)]+)\)\s*\{'),
             'array_decl': re.compile(r'(int|boolean|char|byte|short|long|float|double|String)\[\]\s+(\w+)\s*=\s*new\s+\1\[(\d+)\]\s*;'),
             'array_assign': re.compile(r'(\w+)\[([^\]]+)\]\s*=\s*([^;]+)\s*;'),
-            'var_decl_assign': re.compile(r'(char|byte|short|long|float|double|int|boolean|String|var|[\w<>\.]+)\s+(\w+)\s*=\s*([^;]+)\s*;'),
+            # Type must allow array brackets (e.g. int[], String[]) so literals like int[] a = {1,2}; match.
+            'var_decl_assign': re.compile(r'([\w<>\.\[\]]+)\s+(\w+)\s*=\s*([^;]+)\s*;'),
             'var_assign': re.compile(r'^([\w\.]+)\s*=\s*([^;]+)\s*;'),
             'increment': re.compile(r'([\w\.]+)(\+\+|--)\s*;?'),
             'break_stmt': re.compile(r'break\s*;'),
@@ -371,7 +372,7 @@ class Executor:
             val = self.evaluate_expression(value_expr, line_number, steps)
 
             if isinstance(val, list): # Handle array literal assignment
-                val = {"values": val, "lastUpdatedIndex": None}
+                val = {"type": "array", "values": val, "lastUpdatedIndex": None}
             
             if "." in var_path:
                 base_name, field_name = var_path.split(".", 1)
@@ -456,13 +457,19 @@ class Executor:
             str(k): v for k, v in self.memory.objects.items()
         }
 
-        # Include local arrays in the "arrays" section for visualization
         frame = self.call_stack.peek()
         if frame:
+            # Merge parameters + locals so each step exposes int/boolean/etc. from the active stack frame
+            merged_vars = copy.deepcopy(snapshot["variables"])
+            merged_vars.update(copy.deepcopy(frame.parameters))
+            merged_vars.update(copy.deepcopy(frame.local_variables))
+            snapshot["variables"] = merged_vars
+
+            # Include local arrays in the "arrays" section for visualization
             for name, val in frame.local_variables.items():
                 if isinstance(val, dict) and val.get("type") == "array":
                     snapshot["arrays"][name] = val
-        
+
         return snapshot
 
     def execute_lines(self, lines: List[str], base_line: int, steps: List, is_function_body: bool = False):
@@ -528,19 +535,13 @@ class Executor:
                 elif m := self.patterns['if_header'].match(line):
                     header_line = base_line + i
                     if m.group(2) == '{':
-                        true_b, i = self.extract_block(lines, i + 1); i += 1
+                        true_b, close_line = self.extract_block(lines, i + 1)
+                        false_b, next_i = self._parse_else_after_if_close(lines, close_line)
                     else:
                         rest = line[m.end():].strip()
-                        true_b, i = ([rest], i + 1) if rest else ([lines[i+1]], i + 2)
-                    
-                    false_b = []
-                    if i < len(lines) and self.patterns['else_line'].match(lines[i].strip()):
-                        if '{' in lines[i]:
-                            false_b, end_else = self.extract_block(lines, i + 1); i = end_else + 1
-                        else:
-                            rest = lines[i].split('else', 1)[1].strip()
-                            false_b, i = ([rest], i + 1) if rest else ([lines[i+1]], i + 2)
-                    
+                        true_b, next_i = ([rest], i + 1) if rest else ([lines[i + 1]], i + 2)
+                        false_b = []
+
                     # Build step for the if condition
                     steps.append(self.step_builder.build(
                         len(steps) + 1, 
@@ -552,6 +553,8 @@ class Executor:
                     ))
                     
                     self.condition_engine.execute_if(m.group(1), true_b, false_b, self, self.memory, self.step_builder, steps, header_line, is_function_body)
+                    i = next_i
+                    continue
 
                 else:
                     self.execute_line(line, base_line + i, steps)
@@ -560,8 +563,8 @@ class Executor:
             except JavaException as je:
                 raise je
             except BreakException:
-                if not is_function_body: raise
-                return
+                # Always propagate so loop_ops can exit the correct loop (main uses is_function_body=True).
+                raise
             except FunctionReturn:
                 if is_function_body: raise
                 return
@@ -616,6 +619,34 @@ class Executor:
             block.append(line)
             i += 1
         return block, i
+
+    def _parse_else_after_if_close(self, lines: List[str], close_line: int) -> Tuple[List[str], int]:
+        """
+        After the if-body extract_block, close_line is the index of the line that contains
+        the `}` closing the if block. That line may be `} else {` (same line), or only `}`
+        with `else {` on the following line. Returns (else_body_lines, next_line_index).
+        """
+        false_b: List[str] = []
+        if close_line >= len(lines):
+            return false_b, close_line + 1
+
+        line_close = lines[close_line]
+        inline_else = re.search(r"\}\s*else\s*\{", line_close)
+        if inline_else:
+            after_open = line_close[inline_else.end() :].strip()
+            if not after_open:
+                false_b, end_else = self.extract_block(lines, close_line + 1)
+                return false_b, end_else + 1
+            mod_lines = [after_open] + lines[close_line + 1 :]
+            false_b, end_rel = self.extract_block(mod_lines, 0)
+            return false_b, close_line + 1 + end_rel + 1
+
+        nxt = close_line + 1
+        if nxt < len(lines) and re.match(r"^\s*else\s*\{", lines[nxt].strip()):
+            false_b, end_else = self.extract_block(lines, nxt + 1)
+            return false_b, end_else + 1
+
+        return false_b, close_line + 1
 
     def execute(self, code: str):
         self._exception_active = False

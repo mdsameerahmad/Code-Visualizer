@@ -63,8 +63,16 @@ const Home = () => {
               <>
                 {currentStep && <StepTimeline step={currentStep} />}
 
-                {currentStep && <ArrayView arrays={currentStep.arrays} prevArrays={steps[currentStepIndex - 1]?.arrays} error={error} />}
-                {currentStep && <MemoryView variables={currentStep.variables} />}
+                {currentStep && (
+                  <MemoryView variables={currentStep.variables} arrays={currentStep.arrays} />
+                )}
+                {currentStep && (
+                  <ArrayView
+                    arrays={currentStep.arrays}
+                    prevArrays={steps[currentStepIndex - 1]?.arrays}
+                    error={error}
+                  />
+                )}
                 
                 {outputHistory.length > 0 && (
                   <div className="p-4 bg-gray-900 rounded-lg border border-gray-800">
