@@ -34,7 +34,9 @@ class ConditionEngine:
             line_content=f"if({condition})",
             explanation=f"Condition '{condition}' is {str(is_true).upper()}",
             memory_snapshot=executor._get_full_snapshot(),
-            call_stack_frames=executor.call_stack.get_frames_info()
+            call_stack_frames=executor.call_stack.get_frames_info(),
+            accessed_array_name=executor.last_accessed_array_name,
+            accessed_array_index=executor.last_accessed_array_index
         ))
         
         # 2. Execute corresponding block

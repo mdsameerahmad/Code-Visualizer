@@ -32,6 +32,8 @@ class ExecutionStep(BaseModel):
     call_stack: List[StackFrameData] = []
     type: str = "execution"
     output: Optional[str] = None
+    accessed_array_name: Optional[str] = None
+    accessed_array_index: Optional[int] = None
 
 
 class CodeExecutionResponse(BaseModel):

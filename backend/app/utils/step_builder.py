@@ -12,7 +12,9 @@ class StepBuilder:
         memory_snapshot: Dict[str, Any],
         call_stack_frames: List[Dict[str, Any]],
         type: str = "execution",
-        output: Optional[str] = None
+        output: Optional[str] = None,
+        accessed_array_name: Optional[str] = None,
+        accessed_array_index: Optional[int] = None
     ) -> ExecutionStep:
 
         return ExecutionStep(
@@ -44,5 +46,7 @@ class StepBuilder:
             ],
 
             type=type,
-            output=output
+            output=output,
+            accessed_array_name=accessed_array_name,
+            accessed_array_index=accessed_array_index
         )

@@ -39,6 +39,8 @@ class Executor:
         self.debug_mode = True
         self.current_line = 0
         self.execution_pointer = None
+        self.last_accessed_array_name: Optional[str] = None
+        self.last_accessed_array_index: Optional[int] = None
 
         self.patterns = {
             'import_stmt': re.compile(r'import\s+([a-zA-Z0-9_.*]+)\s*;'),
@@ -177,8 +179,17 @@ class Executor:
                     return self.memory.get_instance_field(frame.this_obj_id, field_name)
                 raise ExecutionError("'this' is not available in static context", 0)
             base_val = self._get_var(base_name)
+            # If base_val is a primitive, it cannot have fields
+            if not isinstance(base_val, (dict, int)): # int is for object IDs
+                raise JavaException("NullPointerException", f"'{base_name}' is a primitive type and does not have fields", 0)
             if isinstance(base_val, int) and base_val in self.memory.objects:
                 return self.memory.get_instance_field(base_val, field_name)
+            elif isinstance(base_val, dict) and base_val.get("type") == "array" and field_name == "length":
+                return len(base_val["values"])
+            elif isinstance(base_val, dict) and field_name in base_val: # Direct field access on dict-like objects
+                return base_val[field_name]
+            else:
+                raise ExecutionError(f"Cannot access field '{field_name}' on '{base_name}'", 0)
         if frame:
             if name in frame.local_variables: return frame.local_variables[name]
             if name in frame.parameters: return frame.parameters[name]
@@ -218,53 +229,98 @@ class Executor:
         line = line.strip()
         if not line or line in ["{", "}", ";"]: return
 
+        self.last_accessed_array_name = None
+        self.last_accessed_array_index = None
+
         # 🔥 Use updated full snapshot
         snapshot = self._get_full_snapshot()
-
-        steps.append(self.step_builder.build(
-            len(steps) + 1, 
-            line_number, 
-            line, 
-            "Executing",
-            snapshot,
-            self.call_stack.get_frames_info()
-        ))
 
         if re.match(r'^(public|private|protected|static|final)\s', line) and '=' not in line and '(' not in line:
             return
 
-        if m := self.patterns['return_stmt'].match(line):
-            val = self.evaluate_expression(m.group(1), line_number, steps)
-            raise FunctionReturn(val)
-
-        elif m := self.patterns['throw_stmt'].match(line):
-            ex_type = m.group(1)
-            msg = self.evaluate_expression(m.group(2), line_number, steps)
-            raise JavaException(ex_type, str(msg), line_number)
-
-        elif m := self.patterns['array_decl'].match(line):
+        if m := self.patterns['array_decl'].match(line):
             name, size_val = m.group(2), int(m.group(3))
-            arr_obj = {"values": [0] * size_val, "lastUpdatedIndex": None}
+            arr_obj = {"type": "array", "values": [0] * size_val, "lastUpdatedIndex": None}
             if self.call_stack.peek(): 
                 self.call_stack.peek().local_variables[name] = arr_obj
             else: 
                 self.memory.arrays[name] = arr_obj
+            
+            steps.append(self.step_builder.build(
+                len(steps) + 1, 
+                line_number, 
+                line, 
+                f"Array '{name}' declared with size {size_val}",
+                self._get_full_snapshot(),
+                self.call_stack.get_frames_info()
+            ))
+            return # IMPORTANT: Exit after handling declaration
 
         elif m := self.patterns['array_assign'].match(line):
-            name, idx_expr, val_expr = m.groups()
-            idx = self.evaluate_expression(idx_expr, line_number, steps)
-            val = self.evaluate_expression(val_expr, line_number, steps)
-            arr = self._get_var(name)
-            if not arr or 'values' not in arr: 
-                raise ExecutionError(f"Array '{name}' not defined", line_number)
-            if not (0 <= idx < len(arr['values'])): 
-                raise JavaException("ArrayIndexOutOfBoundsException", str(idx), line_number)
-            arr['values'][idx] = val
-            arr['lastUpdatedIndex'] = idx
+            name, idx_expr, value_expr = m.group(1), m.group(2), m.group(3)
+            
+            try:
+                idx = self.expression_engine.evaluate(idx_expr, line_number, steps)
+                value = self.expression_engine.evaluate(value_expr, line_number, steps)
+
+                arr = self._get_var(name)
+                if arr is None:
+                    raise JavaException("NullPointerException", name, line_number)
+                if not isinstance(arr, dict) or arr.get("type") != "array" or 'values' not in arr:
+                    raise JavaException("RuntimeException", f"'{name}' is not an array", line_number)
+                
+                # Check for bounds error
+                if not (0 <= idx < len(arr['values'])):
+                    # RECORD THE FAILING STEP BEFORE THROWING
+                    steps.append(self.step_builder.build(
+                        len(steps) + 1, 
+                        line_number, 
+                        line, 
+                        f"ARRAY INDEX OUT OF BOUNDS: index {idx}",
+                        self._get_full_snapshot(),
+                        self.call_stack.get_frames_info(),
+                        accessed_array_name=name,
+                        accessed_array_index=idx
+                    ))
+                    raise JavaException("ArrayIndexOutOfBoundsException", str(idx), line_number)
+                
+                arr['values'][idx] = value
+                arr['lastUpdatedIndex'] = idx
+                self._set_var(name, arr)
+
+                # Capture array access for this step
+                accessed_array_name = name
+                accessed_array_index = idx
+                
+                steps.append(self.step_builder.build(
+                    len(steps) + 1, 
+                    line_number, 
+                    line, 
+                    f"Array '{name}' element at index {idx} assigned value {value}",
+                    self._get_full_snapshot(),
+                    self.call_stack.get_frames_info(),
+                    accessed_array_name=accessed_array_name,
+                    accessed_array_index=accessed_array_index
+                ))
+            except JavaException as je:
+                # If we haven't already added a step for the bounds error, add it now
+                if "ArrayIndexOutOfBoundsException" in je.exception_type and not any(s.line_number == line_number and "BOUNDS" in s.explanation for s in steps[-1:]):
+                    idx_msg = je.message
+                    steps.append(self.step_builder.build(
+                        len(steps) + 1, 
+                        line_number, 
+                        line, 
+                        f"ARRAY INDEX OUT OF BOUNDS: index {idx_msg}",
+                        self._get_full_snapshot(),
+                        self.call_stack.get_frames_info(),
+                        accessed_array_name=name if 'name' in locals() else None,
+                        accessed_array_index=int(idx_msg) if idx_msg.isdigit() else None
+                    ))
+                raise je
 
         elif m := self.patterns['print_stmt'].match(line):
             expr = m.group(1)
-            val = self.evaluate_expression(expr, line_number, steps)
+            val = self.expression_engine.evaluate(expr, line_number, steps)
             
             if val is True: formatted = "true"
             elif val is False: formatted = "false"
@@ -285,19 +341,36 @@ class Executor:
                 self._get_full_snapshot(),
                 self.call_stack.get_frames_info(),
                 type="print", 
-                output=formatted
+                output=formatted,
+                accessed_array_name=self.last_accessed_array_name,
+                accessed_array_index=self.last_accessed_array_index
             ))
 
-        elif "=" in line and not any(op in line for op in ["==", ">=", "<=", "!="]):
-            parts = line.split("=", 1)
-            left, right = parts[0].strip(), parts[1].strip().rstrip(";")
+        elif m := self.patterns['var_decl_assign'].match(line):
+            var_type, name, value_expr = m.groups()
+            value = self.evaluate_expression(value_expr, line_number, steps)
+
+            if isinstance(value, list): # Handle array literal assignment
+                value = {"type": "array", "values": value, "lastUpdatedIndex": None}
+
+            self._set_var(name, value, is_decl=True, line_number=line_number)
             
-            tokens = left.split()
-            var_path = tokens[-1]
-            is_decl = len(tokens) > 1
-            
-            val = self.evaluate_expression(right, line_number, steps)
-            if isinstance(val, list):
+            steps.append(self.step_builder.build(
+                len(steps) + 1, 
+                line_number, 
+                line, 
+                f"Variable '{name}' declared and assigned value {value}",
+                self._get_full_snapshot(),
+                self.call_stack.get_frames_info(),
+                accessed_array_name=self.last_accessed_array_name,
+                accessed_array_index=self.last_accessed_array_index
+            ))
+
+        elif m := self.patterns['var_assign'].match(line):
+            var_path, value_expr = m.groups()
+            val = self.evaluate_expression(value_expr, line_number, steps)
+
+            if isinstance(val, list): # Handle array literal assignment
                 val = {"values": val, "lastUpdatedIndex": None}
             
             if "." in var_path:
@@ -312,14 +385,34 @@ class Executor:
                 if isinstance(obj_id, int) and obj_id in self.memory.objects:
                     self.memory.set_instance_field(obj_id, field_name, val)
                 else:
-                    self._set_var(var_path, val, is_decl, line_number)
+                    self._set_var(var_path, val, is_decl=False, line_number=line_number)
             else:
-                self._set_var(var_path, val, is_decl, line_number)
+                self._set_var(var_path, val, is_decl=False, line_number=line_number)
+            
+            steps.append(self.step_builder.build(
+                len(steps) + 1, 
+                line_number, 
+                line, 
+                f"Variable '{var_path}' assigned value {val}",
+                self._get_full_snapshot(),
+                self.call_stack.get_frames_info(),
+                accessed_array_name=self.last_accessed_array_name,
+                accessed_array_index=self.last_accessed_array_index
+            ))
 
         elif m := self.patterns['increment'].match(line):
             name, op = m.group(1), m.group(2)
             current = self._get_var(name) or 0
             self._set_var(name, current + (1 if op == '++' else -1), False, line_number)
+            
+            steps.append(self.step_builder.build(
+                len(steps) + 1, 
+                line_number, 
+                line, 
+                f"Variable '{name}' {op}",
+                self._get_full_snapshot(),
+                self.call_stack.get_frames_info()
+            ))
 
         elif m := self.patterns['break_stmt'].match(line):
             steps.append(self.step_builder.build(
@@ -340,7 +433,19 @@ class Executor:
                     args_str = line[start + 1:end]
                     arg_strs = self._parse_method_args(args_str)
                     args = [self.evaluate_expression(a, line_number, steps) for a in arg_strs]
+
                     self._execute_method_call(m.group(1), args, line_number, steps)
+                    
+                    steps.append(self.step_builder.build(
+                        len(steps) + 1, 
+                        line_number, 
+                        line, 
+                        f"Method call: {m.group(1)}",
+                        self._get_full_snapshot(),
+                        self.call_stack.get_frames_info(),
+                        accessed_array_name=self.last_accessed_array_name,
+                        accessed_array_index=self.last_accessed_array_index
+                    ))
 
     # 🔥 UPDATED _get_full_snapshot AS PER YOUR REQUEST
     def _get_full_snapshot(self) -> Dict[str, Any]:
@@ -351,6 +456,13 @@ class Executor:
             str(k): v for k, v in self.memory.objects.items()
         }
 
+        # Include local arrays in the "arrays" section for visualization
+        frame = self.call_stack.peek()
+        if frame:
+            for name, val in frame.local_variables.items():
+                if isinstance(val, dict) and val.get("type") == "array":
+                    snapshot["arrays"][name] = val
+        
         return snapshot
 
     def execute_lines(self, lines: List[str], base_line: int, steps: List, is_function_body: bool = False):
@@ -382,12 +494,34 @@ class Executor:
                     header = {'init': m.group(1), 'condition': m.group(2), 'increment': m.group(3)}
                     has_brace = m.group(4) == '{'
                     body, end = self.extract_block(lines, i + 1) if has_brace else (([line[m.end():].strip() or lines[i+1]], i + (0 if line[m.end():].strip() else 1)))
+                    
+                    # Build step for the for loop header
+                    steps.append(self.step_builder.build(
+                        len(steps) + 1, 
+                        line_no, 
+                        line, 
+                        "For loop initialization",
+                        self._get_full_snapshot(),
+                        self.call_stack.get_frames_info()
+                    ))
+                    
                     self.loop_engine.execute_for_loop(header, body, self, self.memory, self.step_builder, steps, base_line + i, is_function_body)
                     i = end + 1
 
                 elif m := self.patterns['while_header'].match(line):
                     has_brace = m.group(2) == '{'
                     body, end = self.extract_block(lines, i + 1) if has_brace else (([line[m.end():].strip() or lines[i+1]], i + (0 if line[m.end():].strip() else 1)))
+                    
+                    # Build step for the while loop header
+                    steps.append(self.step_builder.build(
+                        len(steps) + 1, 
+                        line_no, 
+                        line, 
+                        "While loop condition",
+                        self._get_full_snapshot(),
+                        self.call_stack.get_frames_info()
+                    ))
+                    
                     self.loop_engine.execute_while_loop(m.group(1), body, self, self.memory, self.step_builder, steps, base_line + i, is_function_body)
                     i = end + 1
 
@@ -406,6 +540,17 @@ class Executor:
                         else:
                             rest = lines[i].split('else', 1)[1].strip()
                             false_b, i = ([rest], i + 1) if rest else ([lines[i+1]], i + 2)
+                    
+                    # Build step for the if condition
+                    steps.append(self.step_builder.build(
+                        len(steps) + 1, 
+                        line_no, 
+                        line, 
+                        "If condition",
+                        self._get_full_snapshot(),
+                        self.call_stack.get_frames_info()
+                    ))
+                    
                     self.condition_engine.execute_if(m.group(1), true_b, false_b, self, self.memory, self.step_builder, steps, header_line, is_function_body)
 
                 else:

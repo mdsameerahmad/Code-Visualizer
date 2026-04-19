@@ -105,12 +105,17 @@ class ExpressionEngine:
             idx = self.evaluate(idx_expr, line_number, steps)
             arr = self.executor._get_var(name)
 
-            if arr is None or 'values' not in arr:
+            if arr is None:
                 raise JavaException("NullPointerException", name, line_number)
+            if not isinstance(arr, dict) or arr.get("type") != "array" or 'values' not in arr:
+                raise JavaException("RuntimeException", f"'{name}' is not an array", line_number)
 
             if not (0 <= idx < len(arr['values'])):
                 raise JavaException("ArrayIndexOutOfBoundsException", str(idx), line_number)
 
+            self.executor.last_accessed_array_name = name
+            self.executor.last_accessed_array_index = idx
+            
             expr = expr.replace(match.group(0), self._safe_repr(arr['values'][idx]), 1)
 
         # ---------------- MEMBER + VARIABLE RESOLUTION ----------------
@@ -139,9 +144,35 @@ class ExpressionEngine:
                 # ---------------- obj.field ----------------
                 if "." in name:
                     base, field = name.split(".", 1)
+                    
+                    # skip keywords in base
+                    if base in self.keywords:
+                        continue
+
                     base_val = self.executor._get_var(base)
 
-                    if isinstance(base_val, int):
+                    if base_val is None:
+                        raise JavaException("NullPointerException", base, line_number)
+
+                    # If base_val is a primitive (and not None), it cannot have fields
+                    if not isinstance(base_val, (dict, int)): # int is for object IDs
+                        raise JavaException("RuntimeException", f"'{base}' is a primitive type and does not have fields", line_number)
+
+                    # Handle array.length for directly stored array dictionaries
+                    if isinstance(base_val, dict) and base_val.get("type") == "array" and field == "length":
+                        expr = expr.replace(name, self._safe_repr(len(base_val["values"])), 1)
+                        found = True
+                        break
+
+                    if isinstance(base_val, int): # This is likely an object ID
+                        # Check for array.length
+                        if field == "length":
+                            obj = self.executor.memory.objects.get(base_val)
+                            if obj and obj.get("type") == "array" and "values" in obj:
+                                expr = expr.replace(name, self._safe_repr(len(obj["values"])), 1)
+                                found = True
+                                break
+                        # Original logic for instance fields
                         val = self.executor.memory.get_instance_field(base_val, field)
                         expr = expr.replace(name, self._safe_repr(val), 1)
                         found = True

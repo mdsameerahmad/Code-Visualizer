@@ -36,7 +36,9 @@ class LoopEngine:
                 line_content=f"for(...; {condition}; ...)",
                 explanation=f"Loop condition '{condition}' is {'TRUE' if is_true else 'FALSE'}",
                 memory_snapshot=snapshot,
-                call_stack_frames=executor.call_stack.get_frames_info()
+                call_stack_frames=executor.call_stack.get_frames_info(),
+                accessed_array_name=executor.last_accessed_array_name,
+                accessed_array_index=executor.last_accessed_array_index
             ))
 
             if not is_true:
@@ -75,7 +77,9 @@ class LoopEngine:
                 line_content=f"while({condition})",
                 explanation=f"Loop condition '{condition}' is {'TRUE' if is_true else 'FALSE'}",
                 memory_snapshot=snapshot,
-                call_stack_frames=executor.call_stack.get_frames_info()
+                call_stack_frames=executor.call_stack.get_frames_info(),
+                accessed_array_name=executor.last_accessed_array_name,
+                accessed_array_index=executor.last_accessed_array_index
             ))
 
             if not is_true:

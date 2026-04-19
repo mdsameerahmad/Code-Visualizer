@@ -7,12 +7,13 @@ const useExecutionStore = create((set, get) => ({
   speed: 1000,
   error: null,
   breakpoints: new Set(),
+  outputHistory: [],
 
-  setSteps: (steps) => set({ steps, currentStepIndex: 0, error: null }),
+  setSteps: (steps) => set({ steps, currentStepIndex: 0, error: null, outputHistory: [] }),
   setCurrentStepIndex: (index) => set({ currentStepIndex: index }),
   setIsPlaying: (isPlaying) => set({ isPlaying }),
   setSpeed: (speed) => set({ speed }),
-  setError: (error) => set({ error, steps: [], currentStepIndex: 0, isPlaying: false }),
+  setError: (error) => set({ error, steps: [], currentStepIndex: 0, isPlaying: false, outputHistory: [] }),
   
   toggleBreakpoint: (line) => set((state) => {
     const newBreakpoints = new Set(state.breakpoints);
@@ -28,10 +29,17 @@ const useExecutionStore = create((set, get) => ({
       return;
     }
     const nextIndex = currentStepIndex + 1;
-    if (isPlaying && breakpoints.has(steps[nextIndex].line_number)) {
+    const nextStep = steps[nextIndex];
+    if (isPlaying && breakpoints.has(nextStep.line_number)) {
       set({ isPlaying: false });
     }
-    set({ currentStepIndex: nextIndex });
+    set((state) => {
+      const newOutputHistory = [...state.outputHistory];
+      if (nextStep.output) {
+        newOutputHistory.push(nextStep.output);
+      }
+      return { currentStepIndex: nextIndex, outputHistory: newOutputHistory };
+    });
   },
   
   prevStep: () => set((state) => ({ 

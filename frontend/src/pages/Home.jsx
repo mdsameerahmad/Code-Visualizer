@@ -4,7 +4,6 @@ import CodeEditor from '../components/Editor/CodeEditor';
 import RunButton from '../components/Editor/RunButton';
 import StepTimeline from '../components/Timeline/StepTimeline';
 import ArrayView from '../components/Visualization/ArrayView';
-import CallStackView from '../components/Visualization/CallStackView';
 import ErrorBox from '../components/Visualization/ErrorBox';
 import MemoryView from '../components/Visualization/MemoryView';
 import { useExecution } from '../hooks/useExecution';
@@ -25,7 +24,7 @@ const Home = () => {
     }
 }`);
   const { runCode, isLoading } = useExecution(setCode);
-  const { currentStepIndex, steps, error } = useExecutionStore();
+  const { currentStepIndex, steps, error, outputHistory } = useExecutionStore();
   usePlayback();
 
   const currentStep = steps[currentStepIndex];
@@ -63,10 +62,23 @@ const Home = () => {
             ) : (
               <>
                 {currentStep && <StepTimeline step={currentStep} />}
-                {currentStep && <CallStackView stack={currentStep.call_stack} />}
-                {currentStep && <ArrayView arrays={currentStep.arrays} />}
+
+                {currentStep && <ArrayView arrays={currentStep.arrays} prevArrays={steps[currentStepIndex - 1]?.arrays} error={error} />}
                 {currentStep && <MemoryView variables={currentStep.variables} />}
                 
+                {outputHistory.length > 0 && (
+                  <div className="p-4 bg-gray-900 rounded-lg border border-gray-800">
+                    <h3 className="text-sm font-semibold text-gray-400 mb-3 uppercase tracking-wider">
+                      Output
+                    </h3>
+                    <div className="bg-gray-800 p-3 rounded font-mono text-sm text-gray-100 max-h-40 overflow-y-auto">
+                      {outputHistory.map((output, index) => (
+                        <p key={index}>{output}</p>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {!currentStep && !isLoading && (
                   <div className="flex flex-col items-center justify-center py-20 text-gray-500">
                     <p>No execution data yet.</p>
