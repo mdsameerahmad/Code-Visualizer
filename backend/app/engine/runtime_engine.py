@@ -1,22 +1,26 @@
 from typing import Any, List, Dict, Optional
 from app.engine.exceptions import JavaException, ExecutionError
+from app.engine.string_engine import StringEngine
+from app.engine.string_executor import StringExecutor
 
 class RuntimeEngine:
     def __init__(self, executor):
         self.executor = executor
         self.virtual_files = {"test.txt": "line1\nline2\nline3"}
+        self.string_engine = StringEngine()
+        self.string_executor = StringExecutor(self.string_engine)
 
     def handle_builtin_method(self, base_val: Any, method_name: str, args: List[Any], line_number: int) -> Any:
-        if isinstance(base_val, str):
-            if method_name == "length": return len(base_val)
-            if method_name == "substring":
-                start = args[0]
-                end = args[1] if len(args) > 1 else len(base_val)
-                return base_val[start:end]
-            if method_name == "charAt": 
-                idx = args[0]
-                if 0 <= idx < len(base_val): return f"'{base_val[idx]}'"
-                raise JavaException("StringIndexOutOfBoundsException", str(idx), line_number)
+        if self.string_executor.is_string_like(base_val):
+            result = self.string_executor.execute(base_val, method_name, args, line_number)
+            if result != "NO_BUILTIN":
+                return result
+            # String methods must not fall through to Global/user-method lookup.
+            raise JavaException(
+                "RuntimeException",
+                f"String method '{method_name}' not found",
+                line_number,
+            )
         
         elif isinstance(base_val, dict):
             b_type = base_val.get("type")

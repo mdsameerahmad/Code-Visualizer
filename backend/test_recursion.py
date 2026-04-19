@@ -17,8 +17,8 @@ def test_factorial():
     }
     """
     executor = Executor()
-    steps, error = executor.execute(code)
-    
+    steps, _, error = executor.execute(code)
+
     if error:
         print(f"Error: {error}")
     else:

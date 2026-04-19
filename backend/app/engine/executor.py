@@ -347,6 +347,23 @@ class Executor:
                 accessed_array_index=self.last_accessed_array_index
             ))
 
+        elif m := self.patterns['return_stmt'].match(line):
+            expr = (m.group(1) or "").strip()
+            value = None if expr == "" else self.evaluate_expression(expr, line_number, steps)
+
+            steps.append(self.step_builder.build(
+                len(steps) + 1,
+                line_number,
+                line,
+                f"Return {value}",
+                self._get_full_snapshot(),
+                self.call_stack.get_frames_info(),
+                accessed_array_name=self.last_accessed_array_name,
+                accessed_array_index=self.last_accessed_array_index
+            ))
+
+            raise FunctionReturn(value)
+
         elif m := self.patterns['var_decl_assign'].match(line):
             var_type, name, value_expr = m.groups()
             value = self.evaluate_expression(value_expr, line_number, steps)
@@ -516,8 +533,14 @@ class Executor:
                     i = end + 1
 
                 elif m := self.patterns['while_header'].match(line):
-                    has_brace = m.group(2) == '{'
-                    body, end = self.extract_block(lines, i + 1) if has_brace else (([line[m.end():].strip() or lines[i+1]], i + (0 if line[m.end():].strip() else 1)))
+                    # Regex-based capture breaks on nested parens (e.g., while(check())).
+                    # Extract condition using matching-paren scanning instead.
+                    lparen = line.find("(")
+                    rparen = self._find_matching_paren(line, lparen) if lparen != -1 else -1
+                    condition = line[lparen + 1:rparen].strip() if (lparen != -1 and rparen != -1) else m.group(1)
+                    tail = line[rparen + 1:].strip() if rparen != -1 else line[m.end():].strip()
+                    has_brace = tail.startswith("{") or (m.group(2) == '{')
+                    body, end = self.extract_block(lines, i + 1) if has_brace else (([tail.lstrip("{").strip() or lines[i+1]], i + (0 if tail.lstrip("{").strip() else 1)))
                     
                     # Build step for the while loop header
                     steps.append(self.step_builder.build(
@@ -529,18 +552,41 @@ class Executor:
                         self.call_stack.get_frames_info()
                     ))
                     
-                    self.loop_engine.execute_while_loop(m.group(1), body, self, self.memory, self.step_builder, steps, base_line + i, is_function_body)
+                    self.loop_engine.execute_while_loop(condition, body, self, self.memory, self.step_builder, steps, base_line + i, is_function_body)
                     i = end + 1
 
                 elif m := self.patterns['if_header'].match(line):
                     header_line = base_line + i
-                    if m.group(2) == '{':
+                    # Regex-based capture breaks on nested parens (e.g., if(check())).
+                    lparen = line.find("(")
+                    rparen = self._find_matching_paren(line, lparen) if lparen != -1 else -1
+                    condition = line[lparen + 1:rparen].strip() if (lparen != -1 and rparen != -1) else m.group(1)
+                    after = line[rparen + 1:].strip() if rparen != -1 else line[m.end():].strip()
+
+                    if after.startswith("{") or m.group(2) == '{':
                         true_b, close_line = self.extract_block(lines, i + 1)
                         false_b, next_i = self._parse_else_after_if_close(lines, close_line)
                     else:
-                        rest = line[m.end():].strip()
-                        true_b, next_i = ([rest], i + 1) if rest else ([lines[i + 1]], i + 2)
+                        rest = after
                         false_b = []
+                        next_i = i + 1
+                        # Support one-line if/else: if (cond) stmt; else stmt;
+                        inline_else = re.match(r'^(.*?)\s+else\s+(.*)$', rest)
+                        if inline_else:
+                            true_stmt = inline_else.group(1).strip()
+                            else_stmt = inline_else.group(2).strip()
+                            if true_stmt:
+                                true_b = [true_stmt]
+                            else:
+                                true_b = [lines[i + 1]] if i + 1 < len(lines) else []
+                                next_i = i + 2
+
+                            # Normalize optional braces for one-line else bodies.
+                            if else_stmt.startswith("{") and else_stmt.endswith("}"):
+                                else_stmt = else_stmt[1:-1].strip()
+                            false_b = [else_stmt] if else_stmt else []
+                        else:
+                            true_b, next_i = ([rest], i + 1) if rest else ([lines[i + 1]], i + 2)
 
                     # Build step for the if condition
                     steps.append(self.step_builder.build(
@@ -552,7 +598,7 @@ class Executor:
                         self.call_stack.get_frames_info()
                     ))
                     
-                    self.condition_engine.execute_if(m.group(1), true_b, false_b, self, self.memory, self.step_builder, steps, header_line, is_function_body)
+                    self.condition_engine.execute_if(condition, true_b, false_b, self, self.memory, self.step_builder, steps, header_line, is_function_body)
                     i = next_i
                     continue
 
@@ -570,6 +616,7 @@ class Executor:
                 return
 
     def _execute_method_call(self, full_method_name: str, args: List[Any], line_number: int, steps: List) -> Any:
+        """Delegate method/recursion execution to RecursionFunctionExecutor (via MethodEngine)."""
         return self.method_engine.call(full_method_name, args, line_number, steps)
 
     def add_breakpoint(self, line):
@@ -702,8 +749,11 @@ class Executor:
                 self.current_class = main_class
                 self.call_stack.push(StackFrame(main_class.name, "main", 0, {}, {"args": []}))
                 try:
-                    self.execute_lines(main_class.methods["main"].body, main_class.methods["main"].start_line, steps, True)
-                except (FunctionReturn, BreakException): pass
+                    # Execute main as top-level flow (not a nested function body) so leaked
+                    # FunctionReturn does not terminate program globally.
+                    self.execute_lines(main_class.methods["main"].body, main_class.methods["main"].start_line, steps, False)
+                except BreakException:
+                    pass
                 except JavaException as je:
                     self._exception_active = True
                     return steps, normalized_code, self.build_stack_trace(je)

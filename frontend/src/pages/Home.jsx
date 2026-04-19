@@ -6,6 +6,7 @@ import StepTimeline from '../components/Timeline/StepTimeline';
 import ArrayView from '../components/Visualization/ArrayView';
 import ErrorBox from '../components/Visualization/ErrorBox';
 import MemoryView from '../components/Visualization/MemoryView';
+import StringView from '../components/Visualization/StringView';
 import { useExecution } from '../hooks/useExecution';
 import { usePlayback } from '../hooks/usePlayback';
 import useExecutionStore from '../store/executionStore';
@@ -66,6 +67,7 @@ const Home = () => {
                 {currentStep && (
                   <MemoryView variables={currentStep.variables} arrays={currentStep.arrays} />
                 )}
+                {currentStep && <StringView step={currentStep} />}
                 {currentStep && (
                   <ArrayView
                     arrays={currentStep.arrays}

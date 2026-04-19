@@ -1,4 +1,5 @@
 import re
+import json
 from typing import Any, List
 from app.engine.exceptions import JavaException
 
@@ -18,9 +19,23 @@ class ExpressionEngine:
         if not expr:
             return None
 
+        # ---------------- DIRECT SYMBOL RESOLUTION (preserve references) ----------------
+        # If the expression is just a single symbol like `arr` or `obj.field`, return the
+        # underlying value directly. This is critical for arrays/objects: using _safe_repr +
+        # eval would materialize a *copy* (breaking pass-by-reference across stack frames).
+        if re.fullmatch(r'[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*', expr) and expr not in self.keywords:
+            try:
+                val = self.executor._get_var(expr)
+                if val is not None:
+                    return val
+            except Exception:
+                # Fall through to normal evaluation for cases like unresolved members
+                pass
+
         # ---------------- LITERALS ----------------
-        if expr.startswith('"') and expr.endswith('"'):
-            return expr[1:-1]
+        decoded = self.executor.runtime_engine.string_engine.decode_literal(expr)
+        if decoded is not None:
+            return decoded
 
         if expr == 'true': return True
         if expr == 'false': return False
@@ -55,6 +70,41 @@ class ExpressionEngine:
                 )
 
                 return obj_id
+
+        # ---------------- LITERAL BASE METHOD CALLS ----------------
+        # Handle calls like:
+        #   "ABC".equalsIgnoreCase("abc")
+        #   "hello".length()
+        # before generic method parsing, so dispatch uses StringExecutor.
+        literal_base_method_pattern = re.compile(r'("([^"\\]|\\.)*")\s*\.\s*([\w]+)\s*\(')
+        while True:
+            m = literal_base_method_pattern.search(expr)
+            if not m:
+                break
+
+            start = m.end() - 1
+            end = self.executor._find_matching_paren(expr, start)
+            if end == -1:
+                break
+
+            base_expr = m.group(1)
+            method_name = m.group(3)
+            args_raw = self.executor._parse_method_args(expr[start + 1:end])
+            eval_args = [self.evaluate(a, line_number, steps) for a in args_raw]
+            base_val = self.evaluate(base_expr, line_number, steps)
+
+            result = self.executor.runtime_engine.handle_builtin_method(
+                base_val, method_name, eval_args, line_number
+            )
+            if result == "NO_BUILTIN":
+                raise JavaException(
+                    "RuntimeException",
+                    f"String method '{method_name}' not found",
+                    line_number,
+                )
+
+            replacement = self._safe_repr(result)
+            expr = expr[:m.start()] + replacement + expr[end + 1:]
 
         # ---------------- METHOD CALLS ----------------
         method_pattern = re.compile(r'\b([\w\.]+)\s*\(')
@@ -200,13 +250,21 @@ class ExpressionEngine:
                 break
 
         # ---------------- FINAL EVAL ----------------
+        concat_result = self.executor.runtime_engine.string_engine.try_concat_expression(
+            expr,
+            lambda part: self.evaluate(part, line_number, steps)
+        )
+        if concat_result is not None:
+            return concat_result
+
         python_expr = (
             expr.replace('&&', ' and ')
                 .replace('||', ' or ')
-                .replace('!', ' not ')
+                # Replace unary '!' only (preserve '!=').
                 .replace('true', 'True')
                 .replace('false', 'False')
         )
+        python_expr = re.sub(r'!(?!=)', ' not ', python_expr)
 
         # array literal fix
         python_expr = re.sub(r'new\s+\w+\[\]\s*\{', '[', python_expr)
@@ -222,7 +280,7 @@ class ExpressionEngine:
         if val is None:
             return 'None'
         if isinstance(val, str):
-            return f'"{val}"'
+            return json.dumps(val)
         if isinstance(val, bool):
             return 'True' if val else 'False'
         return str(val)

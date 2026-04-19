@@ -9,7 +9,10 @@ const useExecutionStore = create((set, get) => ({
   breakpoints: new Set(),
   outputHistory: [],
 
-  setSteps: (steps) => set({ steps, currentStepIndex: 0, error: null, outputHistory: [] }),
+  setSteps: (steps) => {
+    const initialOutput = steps?.[0]?.output ? [steps[0].output] : [];
+    set({ steps, currentStepIndex: 0, error: null, outputHistory: initialOutput });
+  },
   setCurrentStepIndex: (index) => set({ currentStepIndex: index }),
   setIsPlaying: (isPlaying) => set({ isPlaying }),
   setSpeed: (speed) => set({ speed }),
@@ -70,7 +73,7 @@ const useExecutionStore = create((set, get) => ({
     set({ currentStepIndex: nextIdx });
   },
 
-  reset: () => set({ steps: [], currentStepIndex: 0, isPlaying: false, breakpoints: new Set() }),
+  reset: () => set({ steps: [], currentStepIndex: 0, isPlaying: false, breakpoints: new Set(), outputHistory: [] }),
 }));
 
 export default useExecutionStore;
